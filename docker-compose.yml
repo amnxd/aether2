@@ -1,0 +1,26 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aether
+      POSTGRES_PASSWORD: aether
+      POSTGRES_DB: aether
+    ports:
+      - "5432:5432"
+    volumes:
+      - aether_pg:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgres://aether:aether@db:5432/aether
+      JWT_SECRET: dev-secret-change-me
+      PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+
+volumes:
+  aether_pg:
