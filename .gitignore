@@ -48,6 +48,10 @@ app.*.map.json
 backend/node_modules/
 backend/.env
 
+# Firebase config / secrets
+android/app/google-services.json
+backend/secrets/
+
 # Env files (keep templates like .env.example)
 .env
 
