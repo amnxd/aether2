@@ -22,6 +22,15 @@ This backend uses PostgreSQL for users + message persistence.
 - `JWT_SECRET` (recommended): set to a long random string in production
 - `PORT` (optional): default `8080`
 
+### Background push notifications (FCM)
+
+To receive notifications when the app is closed, the backend must be able to send Firebase Cloud Messaging pushes.
+
+Set ONE of the following:
+
+- `FIREBASE_SERVICE_ACCOUNT_JSON` (recommended on Render): paste the full Firebase service account JSON
+- `GOOGLE_APPLICATION_CREDENTIALS`: path to a service account JSON file on disk (useful on VPS)
+
 Endpoints:
 
 - `POST /signup` { email, password, username } -> 201 { id, email, username, token }
