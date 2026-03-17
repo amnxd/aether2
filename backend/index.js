@@ -60,12 +60,20 @@ function getDatabaseUrlInfo() {
   if (!url) return { present: false };
   try {
     const u = new URL(url);
+    const database = u.pathname ? u.pathname.replace(/^\//, '') : null;
+    const host = u.hostname || null;
+    const looksPlaceholder =
+      host === 'HOST' ||
+      database === 'DBNAME' ||
+      (typeof host === 'string' && host.toUpperCase() === 'HOST') ||
+      (typeof database === 'string' && database.toUpperCase() === 'DBNAME');
     return {
       present: true,
-      host: u.hostname || null,
+      host,
       port: u.port ? Number(u.port) : null,
-      database: u.pathname ? u.pathname.replace(/^\//, '') : null,
+      database,
       scheme: u.protocol ? u.protocol.replace(':', '') : null,
+      looksPlaceholder,
     };
   } catch (e) {
     return { present: true, parseError: true };
@@ -74,13 +82,20 @@ function getDatabaseUrlInfo() {
 
 app.get('/health', async (req, res) => {
   const ok = await ensureDbReady();
+  const databaseUrl = getDatabaseUrlInfo();
+
+  // Provide an actionable hint when someone accidentally sets the example string.
+  const hint = databaseUrl.present && databaseUrl.looksPlaceholder
+    ? 'DATABASE_URL looks like the example placeholder. On Render, set DATABASE_URL to your Postgres "Internal Database URL".'
+    : null;
   return res.json({
     ok: true,
     dbReady: ok,
     dbError: ok ? null : lastDbError,
     hasDatabaseUrl: Boolean(process.env.DATABASE_URL),
-    databaseUrl: getDatabaseUrlInfo(),
+    databaseUrl,
     sslEnabled: Boolean(db.sslEnabled),
+    hint,
   });
 });
 
