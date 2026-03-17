@@ -33,6 +33,7 @@ async function ensureTables() {
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
       email TEXT UNIQUE NOT NULL,
+      username TEXT UNIQUE,
       password_hash TEXT NOT NULL,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
     );
@@ -41,7 +42,15 @@ async function ensureTables() {
       id SERIAL PRIMARY KEY,
       name TEXT,
       is_group BOOLEAN DEFAULT false,
+      is_global BOOLEAN DEFAULT false,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_members (
+      chat_id INTEGER REFERENCES chats(id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      added_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+      PRIMARY KEY(chat_id, user_id)
     );
 
     CREATE TABLE IF NOT EXISTS messages (
@@ -57,15 +66,23 @@ async function ensureTables() {
     );
   `);
 
+  // Forward-compatible schema updates
+  await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT');
+  // Ensure uniqueness (case-sensitive). The app normalizes usernames to lowercase.
+  await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users(username)');
+
+  await pool.query('ALTER TABLE chats ADD COLUMN IF NOT EXISTS is_global BOOLEAN DEFAULT false');
+  // Ensure only one global chat.
+  await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS chats_one_global_true ON chats(is_global) WHERE is_global');
+
   // If table existed from older schema, add missing columns.
   await pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS nonce TEXT');
   await pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS mac TEXT');
 
-  // Ensure there's at least one default chat (id will be serial)
-  const chk = await pool.query('SELECT count(*) as c FROM chats');
-  const count = parseInt(chk.rows[0].c, 10);
-  if (count === 0) {
-    await pool.query("INSERT INTO chats(name, is_group) VALUES($1,$2)", ['general', false]);
+  // Ensure a single global chat exists.
+  const existingGlobal = await pool.query('SELECT id FROM chats WHERE is_global = true LIMIT 1');
+  if (existingGlobal.rowCount === 0) {
+    await pool.query('INSERT INTO chats(name, is_group, is_global) VALUES($1,$2,$3)', ['Global', true, true]);
   }
 }
 

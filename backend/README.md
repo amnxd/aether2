@@ -24,9 +24,14 @@ This backend uses PostgreSQL for users + message persistence.
 
 Endpoints:
 
-- `POST /signup` { email, password } -> 201 { id, email, token }
+- `POST /signup` { email, password, username } -> 201 { id, email, username, token }
 - `POST /login` { email, password } -> 200 { message, user, token }
 - `GET /users` -> 200 [ { id, email } ] (requires Bearer token)
+- `GET /me` -> 200 { id, email, username } (requires Bearer token)
+- `GET /users/search?username=prefix` -> 200 [ { id, username, email } ] (requires Bearer token)
+- `GET /chats` -> 200 [ ... ] (requires Bearer token)
+- `POST /chats/dm` { username } -> 201 { chatId } (requires Bearer token)
+- `POST /chats/group` { name, usernames: [] } -> 201 { chatId } (requires Bearer token)
 - `GET /chats/:id/messages` -> 200 [ ... ] (requires Bearer token)
 
 Passwords are hashed with `bcryptjs` and stored in Postgres.

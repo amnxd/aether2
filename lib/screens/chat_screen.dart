@@ -131,6 +131,11 @@ class _ChatScreenState extends State<ChatScreen> {
     _sub = _channel!.stream.listen((dynamic msg) async {
       try {
         final data = jsonDecode(msg as String) as Map<String, dynamic>;
+        final incomingChatId = data['chat_id'];
+        if (incomingChatId != null) {
+          final cid = (incomingChatId is num) ? incomingChatId.toInt() : int.tryParse(incomingChatId.toString());
+          if (cid != null && cid != widget.chatId) return;
+        }
         // If message is flagged as E2EE, attempt to decrypt if we have the key.
         if (data['e2ee_flag'] == true) {
           if (_e2eeEnabled && _e2eeKeyBase64 != null) {
@@ -193,13 +198,14 @@ class _ChatScreenState extends State<ChatScreen> {
       // encrypt
       final enc = await CryptoService.encrypt(text, _e2eeKeyBase64!);
       payloadMap = {
+        'chat_id': widget.chatId,
         'e2ee_flag': true,
         'ciphertext': enc['ciphertext'],
         'nonce': enc['nonce'],
         'mac': enc['mac'],
       };
     } else {
-      payloadMap = {'text': text};
+      payloadMap = {'chat_id': widget.chatId, 'text': text};
     }
     final payload = jsonEncode(payloadMap);
     _channel?.sink.add(payload);

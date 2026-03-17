@@ -20,7 +20,7 @@ The app talks to the Node backend in [backend/](backend/) via HTTP + WebSocket.
 You can bake the backend URL into the build with `--dart-define`:
 
 ```bash
-flutter build apk --debug --dart-define=AETHER_BASE_URL=https://YOUR_BACKEND_HOST
+flutter build apk --release --dart-define=AETHER_BASE_URL=https://YOUR_BACKEND_HOST
 ```
 
 The WebSocket URL is derived from the same base URL (`ws://` or `wss://`).

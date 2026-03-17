@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import '../services/backend_service.dart';
 import 'chat_screen.dart';
 import 'login_screen.dart';
+import 'new_dm_screen.dart';
+import 'new_group_screen.dart';
+import 'settings_screen.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -11,58 +14,98 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  bool _loadingUsers = false;
-  List<Map<String, dynamic>> _users = [];
-  final List<Map<String, dynamic>> _chats = List.generate(
-    16,
-    (i) => {
-      'id': i + 1,
-      'name': i % 3 == 0 ? 'Dev Group ${i ~/ 3 + 1}' : 'User ${i + 1}',
-      'last': i % 3 == 0 ? 'Discussing release notes' : 'Hey, are you free later?',
-      'time': '${(10 + i) % 24}:${(i * 7) % 60}'.padLeft(2, '0'),
-      'isGroup': i % 3 == 0,
-    },
-  );
+  bool _loading = true;
+  String? _error;
+  Map<String, dynamic>? _me;
+  List<Map<String, dynamic>> _chats = [];
 
-  Future<void> _fetchUsers() async {
-    setState(() => _loadingUsers = true);
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
-      final users = await BackendService.fetchUsers();
-      setState(() => _users = users);
-      showModalBottomSheet(
-        context: context,
-        builder: (_) => SizedBox(
-          height: 400,
-          child: ListView.separated(
-            padding: const EdgeInsets.all(12),
-            itemCount: _users.length,
-            separatorBuilder: (_, __) => const Divider(color: Colors.white12),
-            itemBuilder: (context, index) {
-              final u = _users[index];
-              return ListTile(
-                leading: CircleAvatar(backgroundColor: Colors.purpleAccent, child: Text('U${u['id']}')),
-                title: Text(u['email'] ?? ''),
-                subtitle: Text('id: ${u['id']}', style: const TextStyle(color: Colors.white54)),
-              );
-            },
-          ),
-        ),
-      );
+      final me = await BackendService.fetchMe();
+      final chats = await BackendService.fetchChats();
+      setState(() {
+        _me = me;
+        _chats = chats;
+      });
     } catch (e) {
-      final msg = e?.toString() ?? 'Failed to fetch users';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      setState(() => _error = e.toString());
     } finally {
-      setState(() => _loadingUsers = false);
+      setState(() => _loading = false);
     }
+  }
+
+  String _displayNameForChat(Map<String, dynamic> chat) {
+    if (chat['is_global'] == true) return 'Global chat';
+    if (chat['is_group'] == true) return (chat['name'] ?? 'Group').toString();
+
+    final meId = _me?['id'];
+    final members = (chat['members'] as List?)?.cast<Map>() ?? const [];
+    for (final m in members) {
+      final id = m['id'];
+      if (meId != null && id == meId) continue;
+      final uname = m['username'];
+      if (uname != null && uname.toString().isNotEmpty) return '@$uname';
+      final email = m['email'];
+      if (email != null && email.toString().isNotEmpty) return email.toString();
+    }
+    return 'DM';
+  }
+
+  Future<void> _createDm() async {
+    final chatId = await Navigator.of(context).push<int>(MaterialPageRoute(builder: (_) => const NewDmScreen()));
+    if (!mounted || chatId == null) return;
+    await _refresh();
+    final chat = _chats.firstWhere((c) => (c['id'] as num).toInt() == chatId, orElse: () => {'id': chatId});
+    if (!mounted) return;
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ChatScreen(chatName: _displayNameForChat(chat), chatId: chatId),
+    ));
+  }
+
+  Future<void> _createGroup() async {
+    final chatId = await Navigator.of(context).push<int>(MaterialPageRoute(builder: (_) => const NewGroupScreen()));
+    if (!mounted || chatId == null) return;
+    await _refresh();
+    final chat = _chats.firstWhere((c) => (c['id'] as num).toInt() == chatId, orElse: () => {'id': chatId, 'name': 'Group', 'is_group': true});
+    if (!mounted) return;
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ChatScreen(chatName: _displayNameForChat(chat), chatId: chatId),
+    ));
   }
 
   @override
   Widget build(BuildContext context) {
+    final global = _chats.where((c) => c['is_global'] == true).cast<Map<String, dynamic>>().toList();
+    final globalChat = global.isNotEmpty ? global.first : null;
+    final dms = _chats.where((c) => c['is_global'] != true && c['is_group'] != true).cast<Map<String, dynamic>>().toList();
+    final groups = _chats.where((c) => c['is_global'] != true && c['is_group'] == true).cast<Map<String, dynamic>>().toList();
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Aether'),
         actions: [
-          IconButton(onPressed: _loadingUsers ? null : _fetchUsers, icon: const Icon(Icons.people)),
+          IconButton(onPressed: _loading ? null : _refresh, icon: const Icon(Icons.refresh)),
+          PopupMenuButton<String>(
+            onSelected: (v) {
+              if (v == 'dm') _createDm();
+              if (v == 'group') _createGroup();
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'dm', child: Text('New DM')),
+              PopupMenuItem(value: 'group', child: Text('New group')),
+            ],
+            icon: const Icon(Icons.add),
+          ),
           IconButton(
             onPressed: () async {
               await BackendService.logout();
@@ -84,132 +127,103 @@ class _HomePageState extends State<HomePage> {
                 child: Text('Aether', style: Theme.of(context).textTheme.titleLarge?.copyWith(color: Colors.white)),
               ),
             ),
-            ListTile(leading: const Icon(Icons.chat), title: const Text('Chats'), onTap: () {}),
-            ListTile(leading: const Icon(Icons.settings), title: const Text('Settings'), onTap: () {}),
+            ListTile(
+              leading: const Icon(Icons.chat),
+              title: const Text('Chats'),
+              onTap: () {
+                Navigator.of(context).pop();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.settings),
+              title: const Text('Settings'),
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
+              },
+            ),
           ],
         ),
       ),
-      body: Container(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: ListView.builder(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          itemCount: _chats.length,
-          itemBuilder: (context, index) {
-            final chat = _chats[index];
-            return Card(
+      body: RefreshIndicator(
+        onRefresh: _refresh,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          children: [
+            if (_loading) const LinearProgressIndicator(minHeight: 2),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+              ),
+            Card(
               color: const Color(0xFF0F1417),
-              margin: const EdgeInsets.symmetric(vertical: 6),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              child: InkWell(
-                onTap: () {
-                  Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatScreen(chatName: chat['name'], chatId: (chat['id'] as num).toInt())));
-                },
-                borderRadius: BorderRadius.circular(8),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Row(
-                    children: [
-                      Stack(
-                        alignment: Alignment.bottomRight,
-                        children: [
-                          CircleAvatar(
-                            radius: 22,
-                            backgroundColor: chat['isGroup'] ? const Color(0xFF4C1D95) : Colors.purpleAccent,
-                            child: Text(
-                              chat['isGroup'] ? chat['name'][0] : (chat['name'] as String).split(' ').last[0],
-                              style: const TextStyle(color: Colors.white),
-                            ),
-                          ),
-                          Positioned(
-                            right: 0,
-                            bottom: 0,
-                            child: Container(
-                              width: 12,
-                              height: 12,
-                              decoration: BoxDecoration(color: Colors.green, shape: BoxShape.circle, border: Border.all(color: Color(0xFF0F1417), width: 2)),
-                            ),
-                          )
-                        ],
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    chat['name'],
-                                    style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                                Text(chat['time'], style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                              ],
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              chat['last'],
-                              style: const TextStyle(color: Colors.white70),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ],
-                        ),
-                      )
-                    ],
-                  ),
+              child: ListTile(
+                leading: const CircleAvatar(backgroundColor: Color(0xFF4C1D95), child: Icon(Icons.public, color: Colors.white)),
+                title: const Text('Global chat', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                subtitle: const Text('Everyone can chat here', style: TextStyle(color: Colors.white70)),
+                onTap: globalChat == null
+                    ? null
+                    : () {
+                        final id = (globalChat['id'] as num).toInt();
+                        Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatScreen(chatName: 'Global chat', chatId: id)));
+                      },
+              ),
+            ),
+            const SizedBox(height: 10),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Text('Direct messages', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
+            ),
+            if (dms.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                child: Text('No DMs yet. Use + → New DM.', style: TextStyle(color: Colors.white38)),
+              ),
+            for (final chat in dms)
+              Card(
+                color: const Color(0xFF0F1417),
+                margin: const EdgeInsets.symmetric(vertical: 6),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                child: ListTile(
+                  leading: CircleAvatar(backgroundColor: Colors.purpleAccent, child: Text(_displayNameForChat(chat)[0].toUpperCase())),
+                  title: Text(_displayNameForChat(chat), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  subtitle: Text((chat['last'] ?? '').toString(), style: const TextStyle(color: Colors.white70), maxLines: 1, overflow: TextOverflow.ellipsis),
+                  onTap: () {
+                    final id = (chat['id'] as num).toInt();
+                    Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatScreen(chatName: _displayNameForChat(chat), chatId: id)));
+                  },
                 ),
               ),
-            );
-          },
+            const SizedBox(height: 10),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Text('Groups', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
+            ),
+            if (groups.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                child: Text('No groups yet. Use + → New group.', style: TextStyle(color: Colors.white38)),
+              ),
+            for (final chat in groups)
+              Card(
+                color: const Color(0xFF0F1417),
+                margin: const EdgeInsets.symmetric(vertical: 6),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                child: ListTile(
+                  leading: CircleAvatar(backgroundColor: const Color(0xFF4C1D95), child: Text(_displayNameForChat(chat)[0].toUpperCase())),
+                  title: Text(_displayNameForChat(chat), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  subtitle: Text((chat['last'] ?? '').toString(), style: const TextStyle(color: Colors.white70), maxLines: 1, overflow: TextOverflow.ellipsis),
+                  onTap: () {
+                    final id = (chat['id'] as num).toInt();
+                    Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatScreen(chatName: _displayNameForChat(chat), chatId: id)));
+                  },
+                ),
+              ),
+          ],
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        backgroundColor: Colors.deepPurpleAccent,
-        child: const Icon(Icons.create),
-        onPressed: () async {
-          final result = await showDialog<Map<String, dynamic>>(context: context, builder: (ctx) {
-            final _nameCtrl = TextEditingController();
-            bool _isGroup = false;
-            return StatefulBuilder(builder: (c, setState) {
-              return AlertDialog(
-                backgroundColor: const Color(0xFF0B0D0F),
-                title: const Text('Create chat'),
-                content: Column(mainAxisSize: MainAxisSize.min, children: [
-                  TextField(controller: _nameCtrl, decoration: const InputDecoration(labelText: 'Name')),
-                  Row(children: [
-                    const Text('Group?'),
-                    Checkbox(value: _isGroup, onChanged: (v) => setState(() => _isGroup = v ?? false)),
-                  ])
-                ]),
-                actions: [
-                  TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('Cancel')),
-                  ElevatedButton(
-                    onPressed: () {
-                      final name = _nameCtrl.text.trim();
-                      if (name.isEmpty) return; 
-                      Navigator.of(c).pop({'name': name, 'isGroup': _isGroup});
-                    },
-                    child: const Text('Create'),
-                  )
-                ],
-              );
-            });
-          });
-          if (result != null) {
-            setState(() {
-              _chats.insert(0, {
-                'id': DateTime.now().millisecondsSinceEpoch,
-                'name': result['name'],
-                'last': 'Chat created',
-                'time': '${DateTime.now().hour}:${DateTime.now().minute.toString().padLeft(2, '0')}',
-                'isGroup': result['isGroup'] ? 1 : 0,
-              });
-            });
-          }
-        },
       ),
     );
   }
