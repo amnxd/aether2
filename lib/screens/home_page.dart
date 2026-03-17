@@ -63,7 +63,11 @@ class _HomePageState extends State<HomePage> {
       final uname = m['username'];
       if (uname != null && uname.toString().isNotEmpty) return '@$uname';
       final email = m['email'];
-      if (email != null && email.toString().isNotEmpty) return email.toString();
+      if (email != null && email.toString().isNotEmpty) {
+        final e = email.toString();
+        final local = e.contains('@') ? e.split('@').first : e;
+        return local.isNotEmpty ? '@$local' : e;
+      }
     }
     return 'DM';
   }

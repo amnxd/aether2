@@ -142,9 +142,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final sender = (senderUsername ?? senderEmail ?? 'unknown').toString();
 
     final clientId = data['client_id']?.toString();
-    final meId = _toInt(BackendService.me?['id']);
     final senderUserId = _toInt(data['sender_user_id']);
-    final isFromMe = meId != null && senderUserId != null && meId == senderUserId;
 
     final mapped = <String, dynamic>{
       'sender': sender,
@@ -162,12 +160,13 @@ class _ChatScreenState extends State<ChatScreen> {
       mapped['mac'] = data['mac'];
     }
 
-    // Dedupe: if this is our own echoed message and we have a pending optimistic row with same client_id, replace it.
-    if (isFromMe && clientId != null) {
+    // Dedupe: if we already have a message with this client_id (optimistic or history), update it.
+    if (clientId != null) {
       final idx = _messages.indexWhere((m) => m['client_id']?.toString() == clientId);
       if (idx != -1) {
         setState(() {
-          _messages[idx] = {..._messages[idx], ...mapped, 'pending': false};
+          final prev = _messages[idx];
+          _messages[idx] = {...prev, ...mapped, 'pending': false};
         });
         _scrollToBottom();
         return;
@@ -231,10 +230,12 @@ class _ChatScreenState extends State<ChatScreen> {
         return at.compareTo(bt);
       });
 
+      final merged = _mergeAndSortMessages(_messages, historyMsgs);
+
       setState(() {
         _messages
           ..clear()
-          ..addAll(historyMsgs);
+          ..addAll(merged);
         _historyLoaded = true;
         _loadingHistory = false;
         _historyError = null;
@@ -247,6 +248,52 @@ class _ChatScreenState extends State<ChatScreen> {
         _historyError = 'Failed to load history';
       });
     }
+  }
+
+  List<Map<String, dynamic>> _mergeAndSortMessages(
+    List<Map<String, dynamic>> live,
+    List<Map<String, dynamic>> history,
+  ) {
+    final all = <Map<String, dynamic>>[...live, ...history];
+
+    DateTime parseTime(Map<String, dynamic> m) {
+      final t = DateTime.tryParse((m['time'] ?? '').toString());
+      return t ?? DateTime.fromMillisecondsSinceEpoch(0);
+    }
+
+    String keyFor(Map<String, dynamic> m) {
+      final clientId = m['client_id']?.toString();
+      if (clientId != null && clientId.isNotEmpty) return 'c:$clientId';
+      final sender = (m['sender_user_id'] ?? m['sender_email'] ?? m['sender'] ?? '').toString();
+      final time = (m['time'] ?? '').toString();
+      final encrypted = m['encrypted'] == true;
+      final content = (m['ciphertext'] ?? m['text'] ?? '').toString();
+      return 't:$time|s:$sender|e:$encrypted|m:$content';
+    }
+
+    all.sort((a, b) => parseTime(a).compareTo(parseTime(b)));
+
+    final merged = <Map<String, dynamic>>[];
+    final idxByKey = <String, int>{};
+
+    for (final m in all) {
+      if (m['_divider'] == true) continue;
+      final k = keyFor(m);
+      final existingIdx = idxByKey[k];
+      if (existingIdx == null) {
+        idxByKey[k] = merged.length;
+        merged.add(m);
+        continue;
+      }
+      final prev = merged[existingIdx];
+      final prevPending = prev['pending'] == true;
+      final newPending = m['pending'] == true;
+      if (prevPending && !newPending) {
+        merged[existingIdx] = {...prev, ...m, 'pending': false};
+      }
+    }
+
+    return merged;
   }
 
   // Attempt to decrypt any encrypted messages (history and live) when key becomes available
@@ -340,7 +387,11 @@ class _ChatScreenState extends State<ChatScreen> {
       return u.startsWith('@') ? u : '@$u';
     }
     final sender = (m['sender'] ?? 'unknown').toString();
-    if (sender.contains('@')) return sender; // email
+    if (sender.contains('@')) {
+      final local = sender.split('@').first;
+      if (local.isNotEmpty) return '@$local';
+      return sender;
+    }
     return sender.startsWith('@') ? sender : '@$sender';
   }
 

@@ -1,7 +1,7 @@
 name: aether
 description: A minimal Flutter app named Aether with a Discord-inspired theme.
 publish_to: "none"
-version: 0.1.0+1
+version: 0.1.0+2
 environment:
   sdk: ">=2.18.0 <4.0.0"
 
