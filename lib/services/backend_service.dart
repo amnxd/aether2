@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
@@ -8,6 +9,13 @@ class BackendService {
   // Change to http://localhost:8080 when running on desktop or iOS simulator.
   static String baseUrl = const String.fromEnvironment('AETHER_BASE_URL', defaultValue: 'http://10.0.2.2:8080');
   static String? authToken;
+
+  // Render (and similar hosts) may cold-start; 10s is often too short.
+  static const Duration requestTimeout = Duration(seconds: 30);
+
+  static String timeoutErrorMessage() {
+    return 'Request timed out. If the backend is asleep (Render cold start), try again in a few seconds.';
+  }
 
   static Future<void> loadTokenFromDisk() async {
     authToken = await SessionService.getToken();
@@ -25,7 +33,7 @@ class BackendService {
           .post(url,
               headers: {'Content-Type': 'application/json'},
               body: jsonEncode({'email': email, 'password': password}))
-          .timeout(const Duration(seconds: 10));
+          .timeout(requestTimeout);
 
       if (resp.statusCode == 201) {
         final data = jsonDecode(resp.body);
@@ -38,6 +46,8 @@ class BackendService {
 
       final err = _extractError(resp.body);
       return err;
+    } on TimeoutException {
+      return timeoutErrorMessage();
     } catch (e) {
       return e.toString();
     }
@@ -50,7 +60,7 @@ class BackendService {
           .post(url,
               headers: {'Content-Type': 'application/json'},
               body: jsonEncode({'email': email, 'username': username, 'password': password}))
-          .timeout(const Duration(seconds: 10));
+          .timeout(requestTimeout);
 
       if (resp.statusCode == 201) {
         final data = jsonDecode(resp.body);
@@ -63,6 +73,8 @@ class BackendService {
 
       final err = _extractError(resp.body);
       return err;
+    } on TimeoutException {
+      return timeoutErrorMessage();
     } catch (e) {
       return e.toString();
     }
@@ -75,7 +87,7 @@ class BackendService {
           .post(url,
               headers: {'Content-Type': 'application/json'},
               body: jsonEncode({'email': email, 'password': password}))
-          .timeout(const Duration(seconds: 10));
+          .timeout(requestTimeout);
 
       if (resp.statusCode == 200) {
         final data = jsonDecode(resp.body);
@@ -88,6 +100,8 @@ class BackendService {
 
       final err = _extractError(resp.body);
       return err;
+    } on TimeoutException {
+      return timeoutErrorMessage();
     } catch (e) {
       return e.toString();
     }
@@ -97,7 +111,7 @@ class BackendService {
     final url = Uri.parse('$baseUrl/users');
     final token = authToken;
     if (token == null) throw 'Missing auth token';
-    final resp = await http.get(url, headers: {'Authorization': 'Bearer $token'}).timeout(const Duration(seconds: 10));
+    final resp = await http.get(url, headers: {'Authorization': 'Bearer $token'}).timeout(requestTimeout);
     if (resp.statusCode == 200) {
       final data = jsonDecode(resp.body) as List<dynamic>;
       return data.map((e) => Map<String, dynamic>.from(e as Map)).toList();
@@ -111,7 +125,7 @@ class BackendService {
     if (token == null) throw 'Missing auth token';
     final resp = await http
         .get(url, headers: {'Authorization': 'Bearer $token'})
-        .timeout(const Duration(seconds: 10));
+        .timeout(requestTimeout);
     if (resp.statusCode == 200) {
       final data = jsonDecode(resp.body) as List<dynamic>;
       return data.map((e) => Map<String, dynamic>.from(e as Map)).toList();
@@ -123,7 +137,7 @@ class BackendService {
     final url = Uri.parse('$baseUrl/me');
     final token = authToken;
     if (token == null) throw 'Missing auth token';
-    final resp = await http.get(url, headers: {'Authorization': 'Bearer $token'}).timeout(const Duration(seconds: 10));
+    final resp = await http.get(url, headers: {'Authorization': 'Bearer $token'}).timeout(requestTimeout);
     if (resp.statusCode == 200) {
       return Map<String, dynamic>.from(jsonDecode(resp.body) as Map);
     }
@@ -134,7 +148,7 @@ class BackendService {
     final url = Uri.parse('$baseUrl/chats');
     final token = authToken;
     if (token == null) throw 'Missing auth token';
-    final resp = await http.get(url, headers: {'Authorization': 'Bearer $token'}).timeout(const Duration(seconds: 10));
+    final resp = await http.get(url, headers: {'Authorization': 'Bearer $token'}).timeout(requestTimeout);
     if (resp.statusCode == 200) {
       final data = jsonDecode(resp.body) as List<dynamic>;
       return data.map((e) => Map<String, dynamic>.from(e as Map)).toList();
@@ -150,7 +164,7 @@ class BackendService {
         .post(url,
             headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
             body: jsonEncode({'username': username}))
-        .timeout(const Duration(seconds: 10));
+        .timeout(requestTimeout);
     if (resp.statusCode == 200 || resp.statusCode == 201) {
       final data = jsonDecode(resp.body);
       return (data['chatId'] as num).toInt();
@@ -166,7 +180,7 @@ class BackendService {
         .post(url,
             headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
             body: jsonEncode({'name': name, 'usernames': usernames}))
-        .timeout(const Duration(seconds: 10));
+        .timeout(requestTimeout);
     if (resp.statusCode == 201) {
       final data = jsonDecode(resp.body);
       return (data['chatId'] as num).toInt();
@@ -178,7 +192,7 @@ class BackendService {
     final url = Uri.parse('$baseUrl/users/search?username=${Uri.encodeQueryComponent(prefix)}');
     final token = authToken;
     if (token == null) throw 'Missing auth token';
-    final resp = await http.get(url, headers: {'Authorization': 'Bearer $token'}).timeout(const Duration(seconds: 10));
+    final resp = await http.get(url, headers: {'Authorization': 'Bearer $token'}).timeout(requestTimeout);
     if (resp.statusCode == 200) {
       final data = jsonDecode(resp.body) as List<dynamic>;
       return data.map((e) => Map<String, dynamic>.from(e as Map)).toList();
