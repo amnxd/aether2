@@ -1,12 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'screens/login_screen.dart';
 import 'screens/home_page.dart';
 import 'services/backend_service.dart';
+import 'services/push_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await BackendService.loadTokenFromDisk();
+  unawaited(PushService.init());
   runApp(const AetherApp());
 }
 
@@ -15,11 +19,11 @@ class AetherApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final base = ThemeData.dark();
+    final base = ThemeData.dark(useMaterial3: false);
     final colorScheme = base.colorScheme.copyWith(
       primary: Colors.deepPurpleAccent,
       secondary: Colors.purpleAccent,
-      background: const Color(0xFF0F1720),
+      surface: const Color(0xFF0F1720),
     );
 
     return MaterialApp(
@@ -32,7 +36,6 @@ class AetherApp extends StatelessWidget {
           elevation: 0,
         ),
         drawerTheme: const DrawerThemeData(backgroundColor: Color(0xFF0B0D0F)),
-        useMaterial3: false,
       ),
       home: const AppGate(),
     );

@@ -43,6 +43,8 @@ async function ensureTables() {
       name TEXT,
       is_group BOOLEAN DEFAULT false,
       is_global BOOLEAN DEFAULT false,
+      e2ee_enabled BOOLEAN DEFAULT false,
+      e2ee_key_base64 TEXT,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
     );
 
@@ -64,6 +66,14 @@ async function ensureTables() {
       plaintext TEXT,
       time TIMESTAMP WITH TIME ZONE DEFAULT now()
     );
+
+    CREATE TABLE IF NOT EXISTS user_devices (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      platform TEXT,
+      fcm_token TEXT UNIQUE NOT NULL,
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+    );
   `);
 
   // Forward-compatible schema updates
@@ -72,12 +82,16 @@ async function ensureTables() {
   await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users(username)');
 
   await pool.query('ALTER TABLE chats ADD COLUMN IF NOT EXISTS is_global BOOLEAN DEFAULT false');
+  await pool.query('ALTER TABLE chats ADD COLUMN IF NOT EXISTS e2ee_enabled BOOLEAN DEFAULT false');
+  await pool.query('ALTER TABLE chats ADD COLUMN IF NOT EXISTS e2ee_key_base64 TEXT');
   // Ensure only one global chat.
   await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS chats_one_global_true ON chats(is_global) WHERE is_global');
 
   // If table existed from older schema, add missing columns.
   await pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS nonce TEXT');
   await pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS mac TEXT');
+
+  await pool.query('CREATE INDEX IF NOT EXISTS user_devices_user_id_idx ON user_devices(user_id)');
 
   // Ensure a single global chat exists.
   const existingGlobal = await pool.query('SELECT id FROM chats WHERE is_global = true LIMIT 1');

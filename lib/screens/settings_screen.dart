@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/backend_service.dart';
+import '../services/realtime_service.dart';
 import 'login_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -37,6 +38,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _logout() async {
+    await RealtimeService.instance.disconnect();
     await BackendService.logout();
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(

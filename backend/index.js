@@ -21,6 +21,8 @@ let dbReady = false;
 let lastDbError = null;
 let lastDbAttemptAt = 0;
 
+const push = require('./push');
+
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
 
 function normalizeUsername(username) {
@@ -150,7 +152,7 @@ app.post('/signup', async (req, res) => {
   );
   const user = created.rows[0];
 
-  const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '1h' });
+  const token = jwt.sign({ id: user.id, email: user.email, username: user.username }, JWT_SECRET, { expiresIn: '1h' });
   return res.status(201).json({ id: user.id, email: user.email, username: user.username, token });
 });
 
@@ -170,7 +172,7 @@ app.post('/login', async (req, res) => {
   const ok = await bcrypt.compare(password, user.password_hash);
   if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
 
-  const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '1h' });
+  const token = jwt.sign({ id: user.id, email: user.email, username: user.username }, JWT_SECRET, { expiresIn: '1h' });
   return res.json({ message: 'Login successful', user: { id: user.id, email: user.email, username: user.username }, token });
 });
 
@@ -226,6 +228,30 @@ app.get('/users/search', verifyToken, async (req, res) => {
   }
 });
 
+app.post('/push/register', verifyToken, async (req, res) => {
+  if (!(await ensureDbReady())) return res.status(503).json({ error: 'Database not ready' });
+  const token = req.body && typeof req.body.token === 'string' ? req.body.token.trim() : '';
+  const platform = req.body && typeof req.body.platform === 'string' ? req.body.platform.trim() : null;
+  if (!token) return res.status(400).json({ error: 'Missing token' });
+  if (token.length > 4096) return res.status(400).json({ error: 'Token too long' });
+
+  try {
+    await pool.query(
+      `
+      INSERT INTO user_devices(user_id, platform, fcm_token, updated_at)
+      VALUES($1, $2, $3, now())
+      ON CONFLICT (fcm_token)
+      DO UPDATE SET user_id = EXCLUDED.user_id, platform = EXCLUDED.platform, updated_at = now()
+      `,
+      [req.user.id, platform, token]
+    );
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('Failed to register push token:', e);
+    return res.status(500).json({ error: 'Failed to register token' });
+  }
+});
+
 async function getGlobalChatId() {
   const result = await pool.query('SELECT id FROM chats WHERE is_global = true LIMIT 1');
   if (result.rowCount === 0) throw new Error('Global chat missing');
@@ -237,6 +263,16 @@ async function isMember(userId, chatId) {
   return r.rowCount > 0;
 }
 
+async function getUsernameById(userId) {
+  try {
+    const r = await pool.query('SELECT username FROM users WHERE id = $1 LIMIT 1', [userId]);
+    if (r.rowCount === 0) return null;
+    return r.rows[0].username ?? null;
+  } catch (_) {
+    return null;
+  }
+}
+
 app.get('/chats', verifyToken, async (req, res) => {
   if (!(await ensureDbReady())) return res.status(503).json({ error: 'Database not ready' });
   const userId = req.user.id;
@@ -245,7 +281,7 @@ app.get('/chats', verifyToken, async (req, res) => {
 
     const result = await pool.query(
       `
-      SELECT c.id, c.name, c.is_group, c.is_global,
+      SELECT c.id, c.name, c.is_group, c.is_global, c.e2ee_enabled,
              lm.plaintext AS last_text,
              lm.ciphertext AS last_ciphertext,
              lm.e2ee_flag AS last_e2ee,
@@ -273,6 +309,7 @@ app.get('/chats', verifyToken, async (req, res) => {
         name: row.name,
         is_group: row.is_group,
         is_global: row.is_global,
+        e2ee_enabled: row.e2ee_enabled === true,
         last: row.last_e2ee ? '[encrypted]' : (row.last_text ?? null),
         last_time: row.last_time,
         members: [],
@@ -299,6 +336,48 @@ app.get('/chats', verifyToken, async (req, res) => {
   } catch (e) {
     console.error('Failed to list chats:', e);
     return res.status(500).json({ error: 'Failed to list chats' });
+  }
+});
+
+// Fetch chat metadata including E2EE settings
+app.get('/chats/:id', verifyToken, async (req, res) => {
+  const chatId = parseInt(req.params.id, 10) || 1;
+  if (!(await ensureDbReady())) return res.status(503).json({ error: 'Database not ready' });
+  try {
+    const meta = await pool.query(
+      'SELECT id, name, is_group, is_global, e2ee_enabled, e2ee_key_base64 FROM chats WHERE id = $1 LIMIT 1',
+      [chatId]
+    );
+    if (meta.rowCount === 0) return res.status(404).json({ error: 'Chat not found' });
+    const chat = meta.rows[0];
+    if (!chat.is_global) {
+      const ok = await isMember(req.user.id, chatId);
+      if (!ok) return res.status(403).json({ error: 'Forbidden' });
+    }
+    const members = chat.is_global
+      ? []
+      : (await pool.query(
+          `
+          SELECT u.id, u.username, u.email
+          FROM chat_members cm
+          JOIN users u ON u.id = cm.user_id
+          WHERE cm.chat_id = $1
+          ORDER BY u.id ASC
+          `,
+          [chatId]
+        )).rows;
+    return res.json({
+      id: chat.id,
+      name: chat.name,
+      is_group: chat.is_group,
+      is_global: chat.is_global,
+      e2ee_enabled: chat.e2ee_enabled === true,
+      e2ee_key_base64: chat.e2ee_key_base64 ?? null,
+      members,
+    });
+  } catch (e) {
+    console.error('Failed to fetch chat meta:', e);
+    return res.status(500).json({ error: 'Failed to fetch chat' });
   }
 });
 
@@ -395,7 +474,14 @@ app.get('/chats/:id/messages', verifyToken, async (req, res) => {
       if (!ok) return res.status(403).json({ error: 'Forbidden' });
     }
     const result = await pool.query(
-      'SELECT id, chat_id, sender_email, e2ee_flag, ciphertext, nonce, mac, plaintext, time FROM messages WHERE chat_id = $1 ORDER BY time ASC',
+      `
+      SELECT m.id, m.chat_id, m.sender_email, u.username AS sender_username,
+             m.e2ee_flag, m.ciphertext, m.nonce, m.mac, m.plaintext, m.time
+      FROM messages m
+      LEFT JOIN users u ON u.email = m.sender_email
+      WHERE m.chat_id = $1
+      ORDER BY m.time ASC
+      `,
       [chatId]
     );
     return res.json(result.rows);
@@ -415,6 +501,18 @@ const wss = new WebSocket.Server({ server, path: '/ws' });
 // Simple set of clients
 const clients = new Set();
 
+async function getFcmTokensForUsers(userIds) {
+  const ids = (userIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x));
+  if (ids.length === 0) return [];
+  const r = await pool.query('SELECT fcm_token FROM user_devices WHERE user_id = ANY($1::int[])', [ids]);
+  return r.rows.map((row) => row.fcm_token).filter(Boolean);
+}
+
+async function getAllowedUserIdsForChat(chatId) {
+  const mem = await pool.query('SELECT user_id FROM chat_members WHERE chat_id = $1', [chatId]);
+  return new Set(mem.rows.map((r) => Number(r.user_id)));
+}
+
 wss.on('connection', (ws, req) => {
   // Expect token in query string: /ws?token=...
   try {
@@ -432,7 +530,7 @@ wss.on('connection', (ws, req) => {
       return;
     }
     ws.user = payload; // attach decoded token payload
-  } catch (e) {
+  } catch (_) {
     ws.close(1008, 'Invalid connection');
     return;
   }
@@ -441,14 +539,22 @@ wss.on('connection', (ws, req) => {
   console.log('WebSocket client connected. Total:', clients.size);
 
   ws.on('message', async (message) => {
-    const text = typeof message === 'string' ? message : message.toString();
-    const sender = (ws.user && ws.user.email) ? ws.user.email : 'unknown';
-    let outPayload;
+    const raw = typeof message === 'string' ? message : message.toString();
+
+    const senderEmail = (ws.user && ws.user.email) ? String(ws.user.email) : 'unknown';
+    const senderUserId = (ws.user && ws.user.id != null) ? Number(ws.user.id) : null;
+    let senderUsername = (ws.user && ws.user.username) ? String(ws.user.username) : null;
+    if (!senderUsername && senderUserId) {
+      senderUsername = await getUsernameById(senderUserId);
+    }
+
+    let outPayload = null;
+
     try {
-      const parsed = JSON.parse(text);
-      const chatId = Number(parsed.chat_id);
+      const parsed = JSON.parse(raw);
+      const chatIdNum = Number(parsed.chat_id);
       const globalChatId = await getGlobalChatId();
-      const effectiveChatId = Number.isFinite(chatId) && chatId > 0 ? chatId : globalChatId;
+      const effectiveChatId = Number.isFinite(chatIdNum) && chatIdNum > 0 ? chatIdNum : globalChatId;
 
       // Check sender has access to this chat.
       const meta = await pool.query('SELECT is_global FROM chats WHERE id = $1 LIMIT 1', [effectiveChatId]);
@@ -465,60 +571,147 @@ wss.on('connection', (ws, req) => {
         }
       }
 
-      const now = new Date();
-      if (parsed.e2ee_flag === true) {
-        // Encrypted message: store ciphertext (and optional nonce/mac) and relay without decrypting
-        outPayload = {
-          sender,
-          e2ee_flag: true,
-          ciphertext: parsed.ciphertext ?? parsed.text ?? String(parsed),
-          nonce: parsed.nonce,
-          mac: parsed.mac,
-          time: now.toISOString(),
-          chat_id: effectiveChatId,
-        };
-
-        // Persist encrypted message (best effort)
+      // Settings update message (used to sync E2EE toggles/key)
+      if (parsed && parsed.type === 'chat_settings_update') {
+        const enabled = parsed.e2ee_enabled === true;
+        const key = typeof parsed.e2ee_key_base64 === 'string' ? parsed.e2ee_key_base64 : null;
         if (await ensureDbReady()) {
           try {
-            await pool.query(
-              'INSERT INTO messages(chat_id, sender_email, e2ee_flag, ciphertext, nonce, mac, plaintext, time) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
-              [effectiveChatId, sender, true, outPayload.ciphertext, outPayload.nonce ?? null, outPayload.mac ?? null, null, now]
-            );
+            if (enabled) {
+              await pool.query(
+                'UPDATE chats SET e2ee_enabled = true, e2ee_key_base64 = COALESCE($2, e2ee_key_base64) WHERE id = $1',
+                [effectiveChatId, key]
+              );
+            } else {
+              await pool.query('UPDATE chats SET e2ee_enabled = false WHERE id = $1', [effectiveChatId]);
+            }
           } catch (e) {
-            console.error('DB insert error (encrypted):', e);
+            console.error('Failed to update chat settings:', e);
           }
         }
+        outPayload = {
+          type: 'chat_settings',
+          chat_id: effectiveChatId,
+          e2ee_enabled: enabled,
+          e2ee_key_base64: enabled ? key : null,
+          sender_email: senderEmail,
+          sender_username: senderUsername,
+          sender_user_id: senderUserId,
+          time: new Date().toISOString(),
+        };
       } else {
-        const plain = parsed.text ?? String(parsed);
-        outPayload = { sender, text: plain, time: now.toISOString(), chat_id: effectiveChatId };
-        // Persist plaintext message (best effort)
-        if (await ensureDbReady()) {
-          try {
-            await pool.query(
-              'INSERT INTO messages(chat_id, sender_email, e2ee_flag, ciphertext, nonce, mac, plaintext, time) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
-              [effectiveChatId, sender, false, null, null, null, plain, now]
-            );
-          } catch (e) {
-            console.error('DB insert error (plain):', e);
+        const now = new Date();
+        const clientId = parsed && parsed.client_id != null ? parsed.client_id : null;
+
+        if (parsed.e2ee_flag === true) {
+          outPayload = {
+            sender_email: senderEmail,
+            sender_username: senderUsername,
+            sender_user_id: senderUserId,
+            e2ee_flag: true,
+            ciphertext: parsed.ciphertext ?? parsed.text ?? String(parsed),
+            nonce: parsed.nonce,
+            mac: parsed.mac,
+            time: now.toISOString(),
+            chat_id: effectiveChatId,
+            client_id: clientId,
+          };
+
+          if (await ensureDbReady()) {
+            try {
+              await pool.query(
+                'INSERT INTO messages(chat_id, sender_email, e2ee_flag, ciphertext, nonce, mac, plaintext, time) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+                [effectiveChatId, senderEmail, true, outPayload.ciphertext, outPayload.nonce ?? null, outPayload.mac ?? null, null, now]
+              );
+            } catch (e) {
+              console.error('DB insert error (encrypted):', e);
+            }
+          }
+        } else {
+          const plain = parsed.text ?? String(parsed);
+          outPayload = {
+            sender_email: senderEmail,
+            sender_username: senderUsername,
+            sender_user_id: senderUserId,
+            text: plain,
+            time: now.toISOString(),
+            chat_id: effectiveChatId,
+            client_id: clientId,
+          };
+
+          if (await ensureDbReady()) {
+            try {
+              await pool.query(
+                'INSERT INTO messages(chat_id, sender_email, e2ee_flag, ciphertext, nonce, mac, plaintext, time) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+                [effectiveChatId, senderEmail, false, null, null, null, plain, now]
+              );
+            } catch (e) {
+              console.error('DB insert error (plain):', e);
+            }
           }
         }
       }
-    } catch (e) {
-      // Non-JSON -> treat as plaintext
+    } catch (_) {
+      // Non-JSON -> treat as plaintext to global chat
       const now = new Date();
       const globalChatId = await getGlobalChatId();
-      outPayload = { sender, text: text, time: now.toISOString(), chat_id: globalChatId };
+      outPayload = {
+        sender_email: senderEmail,
+        sender_username: senderUsername,
+        sender_user_id: senderUserId,
+        text: raw,
+        time: now.toISOString(),
+        chat_id: globalChatId,
+        client_id: null,
+      };
       if (await ensureDbReady()) {
         try {
           await pool.query(
             'INSERT INTO messages(chat_id, sender_email, e2ee_flag, ciphertext, nonce, mac, plaintext, time) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
-            [globalChatId, sender, false, null, null, null, text, now]
+            [globalChatId, senderEmail, false, null, null, null, raw, now]
           );
         } catch (ex) {
           console.error('DB insert error (raw):', ex);
         }
       }
+    }
+
+    if (!outPayload) return;
+
+    // Best-effort push notifications to offline recipients.
+    // (When the app is closed, it won't have a WS connection, so this is how notifications appear.)
+    try {
+      if (!outPayload.type) {
+        const chatId = Number(outPayload.chat_id);
+        const meta = await pool.query('SELECT is_global FROM chats WHERE id = $1 LIMIT 1', [chatId]);
+        const isGlobal = meta.rowCount > 0 && meta.rows[0].is_global === true;
+        if (!isGlobal && senderUserId) {
+          const allowedUserIds = await getAllowedUserIdsForChat(chatId);
+          allowedUserIds.delete(Number(senderUserId));
+
+          const onlineUserIds = new Set();
+          for (const c of clients) {
+            if (c.readyState !== WebSocket.OPEN) continue;
+            if (c.user && c.user.id != null) onlineUserIds.add(Number(c.user.id));
+          }
+
+          const offlineUserIds = [...allowedUserIds].filter((uid) => !onlineUserIds.has(uid));
+          if (offlineUserIds.length > 0) {
+            const tokens = await getFcmTokensForUsers(offlineUserIds);
+            const title = senderUsername ? `New message from @${senderUsername}` : 'New message';
+            const body = outPayload.e2ee_flag === true ? 'Encrypted message' : (outPayload.text || '');
+            await push.sendPushToTokens(tokens, {
+              title,
+              body,
+              data: {
+                chat_id: String(chatId),
+              },
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Push send failed:', e);
     }
 
     // Broadcast to relevant recipients.
@@ -527,10 +720,10 @@ wss.on('connection', (ws, req) => {
       const chatId = Number(outPayload.chat_id);
       const meta = await pool.query('SELECT is_global FROM chats WHERE id = $1 LIMIT 1', [chatId]);
       const isGlobal = meta.rowCount > 0 && meta.rows[0].is_global === true;
+
       let allowedUserIds = null;
       if (!isGlobal) {
-        const mem = await pool.query('SELECT user_id FROM chat_members WHERE chat_id = $1', [chatId]);
-        allowedUserIds = new Set(mem.rows.map((r) => Number(r.user_id)));
+        allowedUserIds = await getAllowedUserIdsForChat(chatId);
       }
 
       for (const c of clients) {

@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import '../services/backend_service.dart';
+import '../services/notification_service.dart';
+import '../services/realtime_service.dart';
+import '../services/push_service.dart';
 import 'chat_screen.dart';
 import 'login_screen.dart';
 import 'new_dm_screen.dart';
@@ -22,7 +25,11 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    // Best-effort: ask for notification permission early so incoming chats can notify.
+    NotificationService.requestPermissionsIfNeeded();
     _refresh();
+    RealtimeService.instance.connect();
+    PushService.registerWithBackend();
   }
 
   Future<void> _refresh() async {
@@ -108,6 +115,7 @@ class _HomePageState extends State<HomePage> {
           ),
           IconButton(
             onPressed: () async {
+              await RealtimeService.instance.disconnect();
               await BackendService.logout();
               if (!context.mounted) return;
               Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const LoginScreen()));

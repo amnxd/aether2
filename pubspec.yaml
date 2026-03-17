@@ -12,6 +12,9 @@ dependencies:
   web_socket_channel: ^3.0.3
   cryptography: ^2.0.0
   shared_preferences: ^2.5.3
+  flutter_local_notifications: ^18.0.1
+  firebase_core: ^4.5.0
+  firebase_messaging: ^16.1.2
 
 dev_dependencies:
   flutter_test:

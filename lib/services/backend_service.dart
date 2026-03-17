@@ -10,6 +10,7 @@ class BackendService {
   // Change to http://localhost:8080 when running on desktop or iOS simulator.
   static String baseUrl = const String.fromEnvironment('AETHER_BASE_URL', defaultValue: 'http://10.0.2.2:8080');
   static String? authToken;
+  static Map<String, dynamic>? me;
 
   // Render (and similar hosts) may cold-start; 10s is often too short.
   static const Duration requestTimeout = Duration(seconds: 30);
@@ -46,6 +47,23 @@ class BackendService {
   static Future<void> logout() async {
     authToken = null;
     await SessionService.clearToken();
+  }
+
+  static Future<void> registerFcmToken({
+    required String token,
+    required String platform,
+  }) async {
+    final auth = authToken;
+    if (auth == null) return;
+
+    await http.post(
+      Uri.parse('$baseUrl/push/register'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $auth',
+      },
+      body: jsonEncode({'token': token, 'platform': platform}),
+    );
   }
 
   static Future<String?> signUp(String email, String password) async {
@@ -169,6 +187,19 @@ class BackendService {
 
   static Future<Map<String, dynamic>> fetchMe() async {
     final url = Uri.parse('$baseUrl/me');
+    final token = authToken;
+    if (token == null) throw 'Missing auth token';
+    final resp = await http.get(url, headers: {'Authorization': 'Bearer $token'}).timeout(requestTimeout);
+    if (resp.statusCode == 200) {
+      final m = Map<String, dynamic>.from(jsonDecode(resp.body) as Map);
+      me = m;
+      return m;
+    }
+    throw _extractError(resp.body);
+  }
+
+  static Future<Map<String, dynamic>> fetchChatMeta(int chatId) async {
+    final url = Uri.parse('$baseUrl/chats/$chatId');
     final token = authToken;
     if (token == null) throw 'Missing auth token';
     final resp = await http.get(url, headers: {'Authorization': 'Bearer $token'}).timeout(requestTimeout);

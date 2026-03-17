@@ -1,11 +1,12 @@
 import 'dart:async';
-import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
-import 'package:web_socket_channel/io.dart';
 
 import '../services/backend_service.dart';
+import '../services/chat_settings_service.dart';
 import '../services/crypto_service.dart';
+import '../services/realtime_service.dart';
 
 class ChatScreen extends StatefulWidget {
   final String chatName;
@@ -17,23 +18,162 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  IOWebSocketChannel? _channel;
   final _messages = <Map<String, dynamic>>[];
   final _controller = TextEditingController();
   final _scroll = ScrollController();
-  bool _connected = false;
   StreamSubscription? _sub;
-  String? _connectionError;
   bool _e2eeEnabled = false;
   String? _e2eeKeyBase64;
   bool _loadingHistory = false;
   bool _historyLoaded = false;
+  String? _historyError;
+
+  final _rand = Random.secure();
 
   @override
   void initState() {
     super.initState();
-    _connect();
-    _loadHistory();
+    RealtimeService.instance.setActiveChatId(widget.chatId);
+    RealtimeService.instance.connect();
+    _subscribeRealtime();
+    _initChat();
+  }
+
+  Future<void> _initChat() async {
+    await _loadChatSettings();
+    await _loadHistory();
+  }
+
+  Future<void> _loadChatSettings() async {
+    // Prefer server truth; fall back to local cache.
+    try {
+      final meta = await BackendService.fetchChatMeta(widget.chatId);
+      final enabled = meta['e2ee_enabled'] == true;
+      final key = meta['e2ee_key_base64'];
+      if (enabled == true && key is String && key.isNotEmpty) {
+        await ChatSettingsService.setE2eeEnabled(widget.chatId, true);
+        await ChatSettingsService.setE2eeKeyBase64(widget.chatId, key);
+        setState(() {
+          _e2eeEnabled = true;
+          _e2eeKeyBase64 = key;
+        });
+        await _tryDecryptEncryptedMessages();
+        return;
+      }
+      // If server says disabled, respect it.
+      if (enabled == false) {
+        await ChatSettingsService.setE2eeEnabled(widget.chatId, false);
+        setState(() => _e2eeEnabled = false);
+      }
+    } catch (_) {
+      // ignore
+    }
+
+    final cachedEnabled = await ChatSettingsService.getE2eeEnabled(widget.chatId);
+    final cachedKey = await ChatSettingsService.getE2eeKeyBase64(widget.chatId);
+    if (!mounted) return;
+    setState(() {
+      _e2eeEnabled = cachedEnabled ?? false;
+      _e2eeKeyBase64 = cachedKey;
+    });
+    await _tryDecryptEncryptedMessages();
+  }
+
+  void _subscribeRealtime() {
+    _sub?.cancel();
+    _sub = RealtimeService.instance.messages.listen((data) async {
+      final incomingChatId = _toInt(data['chat_id']);
+      if (incomingChatId == null || incomingChatId != widget.chatId) return;
+
+      if (data['type'] == 'chat_settings') {
+        final enabled = data['e2ee_enabled'] == true;
+        final key = data['e2ee_key_base64'];
+        if (enabled) {
+          if (key is String && key.isNotEmpty) {
+            await ChatSettingsService.setE2eeEnabled(widget.chatId, true);
+            await ChatSettingsService.setE2eeKeyBase64(widget.chatId, key);
+            if (!mounted) return;
+            setState(() {
+              _e2eeEnabled = true;
+              _e2eeKeyBase64 = key;
+            });
+            await _tryDecryptEncryptedMessages();
+          } else {
+            if (!mounted) return;
+            setState(() => _e2eeEnabled = true);
+          }
+        } else {
+          await ChatSettingsService.setE2eeEnabled(widget.chatId, false);
+          if (!mounted) return;
+          setState(() => _e2eeEnabled = false);
+        }
+        return;
+      }
+
+      await _handleIncomingChatMessage(data);
+    });
+  }
+
+  Future<void> _handleIncomingChatMessage(Map<String, dynamic> data) async {
+    final isEncrypted = data['e2ee_flag'] == true;
+
+    String displayText;
+    if (isEncrypted) {
+      displayText = '[encrypted]';
+      if (_e2eeEnabled && _e2eeKeyBase64 != null) {
+        try {
+          final pt = await CryptoService.decrypt(
+            data['ciphertext'],
+            data['nonce'],
+            _e2eeKeyBase64!,
+            data['mac'],
+          );
+          displayText = pt;
+        } catch (_) {
+          // keep placeholder
+        }
+      }
+    } else {
+      displayText = (data['text'] ?? '').toString();
+    }
+
+    final senderUsername = data['sender_username'];
+    final senderEmail = data['sender_email'];
+    final sender = (senderUsername ?? senderEmail ?? 'unknown').toString();
+
+    final clientId = data['client_id']?.toString();
+    final meId = _toInt(BackendService.me?['id']);
+    final senderUserId = _toInt(data['sender_user_id']);
+    final isFromMe = meId != null && senderUserId != null && meId == senderUserId;
+
+    final mapped = <String, dynamic>{
+      'sender': sender,
+      'sender_username': senderUsername,
+      'sender_email': senderEmail,
+      'sender_user_id': senderUserId,
+      'text': displayText,
+      'time': data['time'] ?? DateTime.now().toIso8601String(),
+      'encrypted': isEncrypted,
+      'client_id': clientId,
+    };
+    if (isEncrypted) {
+      mapped['ciphertext'] = data['ciphertext'];
+      mapped['nonce'] = data['nonce'];
+      mapped['mac'] = data['mac'];
+    }
+
+    // Dedupe: if this is our own echoed message and we have a pending optimistic row with same client_id, replace it.
+    if (isFromMe && clientId != null) {
+      final idx = _messages.indexWhere((m) => m['client_id']?.toString() == clientId);
+      if (idx != -1) {
+        setState(() {
+          _messages[idx] = {..._messages[idx], ...mapped, 'pending': false};
+        });
+        return;
+      }
+    }
+
+    setState(() => _messages.insert(0, mapped));
   }
 
   Future<void> _loadHistory() async {
@@ -56,7 +196,9 @@ class _ChatScreenState extends State<ChatScreen> {
           }
         }
         final m = <String, dynamic>{
-          'sender': row['sender_email'] ?? 'unknown',
+          'sender': row['sender_username'] ?? row['sender_email'] ?? 'unknown',
+          'sender_username': row['sender_username'],
+          'sender_email': row['sender_email'],
           'text': displayText,
           'time': row['time'] ?? DateTime.now().toIso8601String(),
           'encrypted': isEncrypted,
@@ -79,11 +221,13 @@ class _ChatScreenState extends State<ChatScreen> {
         _messages.addAll(historyMsgs);
         _historyLoaded = true;
         _loadingHistory = false;
+        _historyError = null;
       });
     } catch (_) {
       setState(() {
         _historyLoaded = true;
         _loadingHistory = false;
+        _historyError = 'Failed to load history';
       });
     }
   }
@@ -109,90 +253,11 @@ class _ChatScreenState extends State<ChatScreen> {
     if (changed) setState(() {});
   }
 
-  void _connect() {
-    final token = BackendService.authToken;
-    if (token == null) {
-      _connectionError = 'Missing auth token';
-      _connected = false;
-      return;
-    }
-    final base = Uri.parse(BackendService.baseUrl);
-    final scheme = base.scheme == 'https' ? 'wss' : 'ws';
-    final wsUri = Uri(
-      scheme: scheme,
-      host: base.host,
-      port: base.hasPort ? base.port : (base.scheme == 'https' ? 443 : 80),
-      path: '/ws',
-      queryParameters: {'token': token},
-    );
-    _channel = IOWebSocketChannel.connect(wsUri);
-    _connected = true;
-    _connectionError = null;
-    _sub = _channel!.stream.listen((dynamic msg) async {
-      try {
-        final data = jsonDecode(msg as String) as Map<String, dynamic>;
-        final incomingChatId = data['chat_id'];
-        if (incomingChatId != null) {
-          final cid = (incomingChatId is num) ? incomingChatId.toInt() : int.tryParse(incomingChatId.toString());
-          if (cid != null && cid != widget.chatId) return;
-        }
-        // If message is flagged as E2EE, attempt to decrypt if we have the key.
-        if (data['e2ee_flag'] == true) {
-          if (_e2eeEnabled && _e2eeKeyBase64 != null) {
-            try {
-              final plaintext = await CryptoService.decrypt(data['ciphertext'], data['nonce'], _e2eeKeyBase64!, data['mac']);
-              setState(() => _messages.insert(0, {
-                    'sender': data['sender'],
-                    'text': plaintext,
-                    'time': data['time'],
-                    'encrypted': true,
-                    'ciphertext': data['ciphertext'],
-                    'nonce': data['nonce'],
-                    'mac': data['mac'],
-                  }));
-            } catch (e) {
-              // decryption failed
-              setState(() => _messages.insert(0, {
-                    'sender': data['sender'],
-                    'text': '[encrypted]',
-                    'time': data['time'],
-                    'ciphertext': data['ciphertext'],
-                    'nonce': data['nonce'],
-                    'mac': data['mac'],
-                    'encrypted': true
-                  }));
-            }
-          } else {
-            // No key available locally; show placeholder and ciphertext
-            setState(() => _messages.insert(0, {
-                  'sender': data['sender'],
-                  'text': '[encrypted]',
-                  'time': data['time'],
-                  'ciphertext': data['ciphertext'],
-                  'nonce': data['nonce'],
-                  'mac': data['mac'],
-                  'encrypted': true
-                }));
-          }
-        } else {
-          setState(() => _messages.insert(0, data));
-        }
-      } catch (_) {
-        // non-json message
-        setState(() => _messages.insert(0, {'sender': 'remote', 'text': msg.toString(), 'time': DateTime.now().toIso8601String()}));
-      }
-    }, onDone: () {
-      setState(() => _connected = false);
-    }, onError: (e) {
-      setState(() => _connected = false);
-      // Avoid using ScaffoldMessenger during initState; render error in UI.
-      setState(() => _connectionError = 'WebSocket error');
-    });
-  }
-
   Future<void> _send() async {
     final text = _controller.text.trim();
-    if (text.isEmpty || !_connected) return;
+    if (text.isEmpty) return;
+
+    final clientId = _newClientId();
     Map<String, dynamic> payloadMap;
     if (_e2eeEnabled && _e2eeKeyBase64 != null) {
       // encrypt
@@ -203,14 +268,25 @@ class _ChatScreenState extends State<ChatScreen> {
         'ciphertext': enc['ciphertext'],
         'nonce': enc['nonce'],
         'mac': enc['mac'],
+        'client_id': clientId,
       };
     } else {
-      payloadMap = {'chat_id': widget.chatId, 'text': text};
+      payloadMap = {'chat_id': widget.chatId, 'text': text, 'client_id': clientId};
     }
-    final payload = jsonEncode(payloadMap);
-    _channel?.sink.add(payload);
+
+    RealtimeService.instance.sendJson(payloadMap);
+
+    final myUsername = (BackendService.me?['username'] ?? 'me').toString();
     setState(() {
-      _messages.insert(0, {'sender': 'Me', 'text': text, 'time': DateTime.now().toIso8601String(), 'encrypted': _e2eeEnabled});
+      _messages.insert(0, {
+        'sender': myUsername,
+        'sender_username': myUsername,
+        'text': text,
+        'time': DateTime.now().toIso8601String(),
+        'encrypted': _e2eeEnabled,
+        'client_id': clientId,
+        'pending': true,
+      });
       _controller.clear();
     });
     // scroll to top (latest inserted at 0)
@@ -220,12 +296,36 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _sub?.cancel();
-    try {
-      _channel?.sink.close();
-    } catch (_) {}
+    if (RealtimeService.instance.activeChatId == widget.chatId) {
+      RealtimeService.instance.setActiveChatId(null);
+    }
     _controller.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  String _newClientId() {
+    final ts = DateTime.now().microsecondsSinceEpoch;
+    final r = _rand.nextInt(1 << 32);
+    return '$ts-$r';
+  }
+
+  int? _toInt(dynamic v) {
+    if (v == null) return null;
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return int.tryParse(v.toString());
+  }
+
+  String _displaySender(Map<String, dynamic> m) {
+    final senderUsername = m['sender_username'];
+    if (senderUsername != null && senderUsername.toString().isNotEmpty) {
+      final u = senderUsername.toString();
+      return u.startsWith('@') ? u : '@$u';
+    }
+    final sender = (m['sender'] ?? 'unknown').toString();
+    if (sender.contains('@')) return sender; // email
+    return sender.startsWith('@') ? sender : '@$sender';
   }
 
   Widget _buildMessage(Map<String, dynamic> m) {
@@ -242,7 +342,7 @@ class _ChatScreenState extends State<ChatScreen> {
         ]),
       );
     }
-    final sender = m['sender'] ?? 'unknown';
+    final sender = _displaySender(m);
     final text = m['text'] ?? '';
     final time = m['time'] ?? DateTime.now().toIso8601String();
     final t = DateTime.tryParse(time)?.toLocal();
@@ -251,7 +351,14 @@ class _ChatScreenState extends State<ChatScreen> {
       leading: CircleAvatar(backgroundColor: Colors.purpleAccent, child: Text(sender[0].toUpperCase())),
       title: Row(children: [
         Expanded(child: Text(sender, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white))),
-        if (m['encrypted'] == true) const Icon(Icons.lock, size: 16, color: Colors.white54),
+        if (m['pending'] == true) const Padding(
+          padding: EdgeInsets.only(left: 6),
+          child: SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
+        ),
+        if (m['encrypted'] == true) const Padding(
+          padding: EdgeInsets.only(left: 6),
+          child: Icon(Icons.lock, size: 16, color: Colors.white54),
+        ),
       ]),
       subtitle: Text(text, style: const TextStyle(color: Colors.white70)),
       trailing: Text(timestr, style: const TextStyle(color: Colors.white54, fontSize: 12)),
@@ -269,51 +376,69 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final ws = RealtimeService.instance;
     return Scaffold(
       appBar: AppBar(title: Text(widget.chatName), actions: [
         Row(children: [
           const Text('E2EE', style: TextStyle(color: Colors.white70)),
           Switch(
             value: _e2eeEnabled,
-            activeColor: Colors.deepPurpleAccent,
+            activeThumbColor: Colors.deepPurpleAccent,
             onChanged: (v) async {
               if (v) {
                 // enable: generate key if missing
                 if (_e2eeKeyBase64 == null) {
                   final key = await CryptoService.generateKeyBase64();
+                  await ChatSettingsService.setE2eeKeyBase64(widget.chatId, key);
                   setState(() => _e2eeKeyBase64 = key);
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('E2EE enabled: local key generated')));
                 }
               } else {
                 // disable: keep key in memory but mark disabled
               }
+
+              await ChatSettingsService.setE2eeEnabled(widget.chatId, v);
               setState(() => _e2eeEnabled = v);
+
+              // Sync to the other user(s) in this chat.
+              ws.sendJson({
+                'type': 'chat_settings_update',
+                'chat_id': widget.chatId,
+                'e2ee_enabled': v,
+                'e2ee_key_base64': v ? _e2eeKeyBase64 : null,
+              });
+              await _tryDecryptEncryptedMessages();
             },
           ),
         ])
       ]),
       body: Column(
         children: [
+          ValueListenableBuilder<bool>(
+            valueListenable: ws.connected,
+            builder: (_, ok, __) {
+              if (ok) return const SizedBox.shrink();
+              return Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                color: Colors.redAccent.withValues(alpha: 0.15),
+                child: Text(ws.lastError ?? 'Connecting...', style: const TextStyle(color: Colors.white70)),
+              );
+            },
+          ),
           if (_loadingHistory)
             const LinearProgressIndicator(minHeight: 2, color: Colors.deepPurpleAccent, backgroundColor: Colors.transparent),
+          if (_historyLoaded && _historyError != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: Text(_historyError!, style: const TextStyle(color: Colors.white54)),
+            ),
           Expanded(
-            child: _connected
-                ? ListView.builder(
-                    controller: _scroll,
-                    reverse: true,
-                    itemCount: _messages.length,
-                    itemBuilder: (_, i) => _buildMessage(_messages[i]),
-                  )
-                : Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const CircularProgressIndicator(),
-                        const SizedBox(height: 8),
-                        Text(_connectionError ?? 'Connecting...'),
-                      ],
-                    ),
-                  ),
+            child: ListView.builder(
+              controller: _scroll,
+              reverse: true,
+              itemCount: _messages.length,
+              itemBuilder: (_, i) => _buildMessage(_messages[i]),
+            ),
           ),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
@@ -329,9 +454,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
                 IconButton(
-                  onPressed: _connected ? _send : null,
+                  onPressed: _send,
                   icon: const Icon(Icons.send),
-                  color: _connected ? Colors.deepPurpleAccent : Colors.white24,
+                  color: Colors.deepPurpleAccent,
                 )
               ],
             ),
