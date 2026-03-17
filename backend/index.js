@@ -84,6 +84,21 @@ app.get('/health', async (req, res) => {
   });
 });
 
+app.get('/', (req, res) => {
+  return res.json({
+    ok: true,
+    service: 'aether-backend',
+    endpoints: {
+      health: '/health',
+      signup: 'POST /signup',
+      login: 'POST /login',
+      users: 'GET /users (Bearer)',
+      messages: 'GET /chats/:id/messages (Bearer)',
+      ws: '/ws?token=...'
+    },
+  });
+});
+
 app.post('/signup', async (req, res) => {
   const { email, password } = req.body || {};
   if (!validateEmail(email)) return res.status(400).json({ error: 'Invalid email' });
