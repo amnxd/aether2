@@ -53,3 +53,12 @@ backend/.env
 
 # Local build artifacts (too large for GitHub)
 aether-debug.apk
+aether-release.apk
+
+# Tooling scratch
+tool/
+assets/icon/*.tmp
+
+# Python tooling env
+.venv/
+__pycache__/
