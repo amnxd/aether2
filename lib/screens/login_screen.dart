@@ -32,7 +32,9 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _loading = true);
+    await BackendService.warmUp();
     final err = await BackendService.login(_emailController.text.trim(), _passwordController.text);
+    if (!mounted) return;
     setState(() => _loading = false);
     if (err != null) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));

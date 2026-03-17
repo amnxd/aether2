@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 
 import 'session_service.dart';
@@ -12,9 +13,30 @@ class BackendService {
 
   // Render (and similar hosts) may cold-start; 10s is often too short.
   static const Duration requestTimeout = Duration(seconds: 30);
+  static const Duration warmUpTimeout = Duration(seconds: 20);
+  static bool _warmedUp = false;
 
   static String timeoutErrorMessage() {
     return 'Request timed out. If the backend is asleep (Render cold start), try again in a few seconds.';
+  }
+
+  static String _networkErrorMessage() {
+    return 'Network error. Check internet connection and that the backend URL is correct.';
+  }
+
+  static String _tlsErrorMessage() {
+    return 'Secure connection failed. Check device date/time and try again.';
+  }
+
+  static Future<void> warmUp() async {
+    if (_warmedUp) return;
+    try {
+      final url = Uri.parse('$baseUrl/health');
+      await http.get(url).timeout(warmUpTimeout);
+      _warmedUp = true;
+    } catch (_) {
+      // Ignore warm-up failures; normal requests will surface errors.
+    }
   }
 
   static Future<void> loadTokenFromDisk() async {
@@ -48,6 +70,10 @@ class BackendService {
       return err;
     } on TimeoutException {
       return timeoutErrorMessage();
+    } on SocketException {
+      return _networkErrorMessage();
+    } on HandshakeException {
+      return _tlsErrorMessage();
     } catch (e) {
       return e.toString();
     }
@@ -75,6 +101,10 @@ class BackendService {
       return err;
     } on TimeoutException {
       return timeoutErrorMessage();
+    } on SocketException {
+      return _networkErrorMessage();
+    } on HandshakeException {
+      return _tlsErrorMessage();
     } catch (e) {
       return e.toString();
     }
@@ -102,6 +132,10 @@ class BackendService {
       return err;
     } on TimeoutException {
       return timeoutErrorMessage();
+    } on SocketException {
+      return _networkErrorMessage();
+    } on HandshakeException {
+      return _tlsErrorMessage();
     } catch (e) {
       return e.toString();
     }
