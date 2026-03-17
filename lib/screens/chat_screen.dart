@@ -169,19 +169,31 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() {
           _messages[idx] = {..._messages[idx], ...mapped, 'pending': false};
         });
+        _scrollToBottom();
         return;
       }
     }
 
-    setState(() => _messages.insert(0, mapped));
+    setState(() => _messages.add(mapped));
+    _scrollToBottom();
+  }
+
+  void _scrollToBottom() {
+    if (!_scroll.hasClients) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scroll.hasClients) return;
+      _scroll.animateTo(
+        _scroll.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
+    });
   }
 
   Future<void> _loadHistory() async {
     setState(() => _loadingHistory = true);
     try {
       final rows = await BackendService.fetchChatHistory(widget.chatId);
-      // rows are ASC by time (oldest first); append to end so they appear
-      // at the top of the reversed ListView, above live messages.
       final historyMsgs = <Map<String, dynamic>>[];
       for (final row in rows) {
         final isEncrypted = row['e2ee_flag'] == true;
@@ -212,17 +224,22 @@ class _ChatScreenState extends State<ChatScreen> {
         historyMsgs.add(m);
       }
 
-      if (historyMsgs.isNotEmpty) {
-        // Insert a divider sentinel at the boundary between history and live.
-        historyMsgs.add({'_divider': true});
-      }
+      // Ensure chronological order regardless of backend ordering.
+      historyMsgs.sort((a, b) {
+        final at = DateTime.tryParse((a['time'] ?? '').toString()) ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final bt = DateTime.tryParse((b['time'] ?? '').toString()) ?? DateTime.fromMillisecondsSinceEpoch(0);
+        return at.compareTo(bt);
+      });
 
       setState(() {
-        _messages.addAll(historyMsgs);
+        _messages
+          ..clear()
+          ..addAll(historyMsgs);
         _historyLoaded = true;
         _loadingHistory = false;
         _historyError = null;
       });
+      _scrollToBottom();
     } catch (_) {
       setState(() {
         _historyLoaded = true;
@@ -278,7 +295,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
     final myUsername = (BackendService.me?['username'] ?? 'me').toString();
     setState(() {
-      _messages.insert(0, {
+      _messages.add({
         'sender': myUsername,
         'sender_username': myUsername,
         'text': text,
@@ -289,8 +306,7 @@ class _ChatScreenState extends State<ChatScreen> {
       });
       _controller.clear();
     });
-    // scroll to top (latest inserted at 0)
-    _scroll.animateTo(0.0, duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
+    _scrollToBottom();
   }
 
   @override
@@ -336,7 +352,7 @@ class _ChatScreenState extends State<ChatScreen> {
           Expanded(child: Divider(color: Colors.white24)),
           Padding(
             padding: EdgeInsets.symmetric(horizontal: 8),
-            child: Text('— history above —', style: TextStyle(color: Colors.white38, fontSize: 11)),
+            child: Text('— history —', style: TextStyle(color: Colors.white38, fontSize: 11)),
           ),
           Expanded(child: Divider(color: Colors.white24)),
         ]),
@@ -435,7 +451,7 @@ class _ChatScreenState extends State<ChatScreen> {
           Expanded(
             child: ListView.builder(
               controller: _scroll,
-              reverse: true,
+              reverse: false,
               itemCount: _messages.length,
               itemBuilder: (_, i) => _buildMessage(_messages[i]),
             ),
