@@ -45,12 +45,30 @@ async function ensureDbReady() {
     return true;
   } catch (e) {
     dbReady = false;
+    const rawMessage = e && e.message ? String(e.message) : String(e);
     lastDbError = {
       code: e && e.code ? String(e.code) : undefined,
-      message: e && e.message ? String(e.message) : String(e),
+      message: rawMessage.replace(/[\r\n]+/g, ' ').trim(),
     };
     console.error('DB not ready:', lastDbError);
     return false;
+  }
+}
+
+function getDatabaseUrlInfo() {
+  const url = process.env.DATABASE_URL;
+  if (!url) return { present: false };
+  try {
+    const u = new URL(url);
+    return {
+      present: true,
+      host: u.hostname || null,
+      port: u.port ? Number(u.port) : null,
+      database: u.pathname ? u.pathname.replace(/^\//, '') : null,
+      scheme: u.protocol ? u.protocol.replace(':', '') : null,
+    };
+  } catch (e) {
+    return { present: true, parseError: true };
   }
 }
 
@@ -61,6 +79,8 @@ app.get('/health', async (req, res) => {
     dbReady: ok,
     dbError: ok ? null : lastDbError,
     hasDatabaseUrl: Boolean(process.env.DATABASE_URL),
+    databaseUrl: getDatabaseUrlInfo(),
+    sslEnabled: Boolean(db.sslEnabled),
   });
 });
 

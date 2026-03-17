@@ -19,9 +19,8 @@ function shouldEnableSslForDatabaseUrl(url) {
   return true;
 }
 
-const ssl = shouldEnableSslForDatabaseUrl(connectionString)
-  ? { rejectUnauthorized: false }
-  : undefined;
+const sslEnabled = shouldEnableSslForDatabaseUrl(connectionString);
+const ssl = sslEnabled ? { rejectUnauthorized: false } : undefined;
 
 const pool = new Pool({
   connectionString,
@@ -73,4 +72,5 @@ async function ensureTables() {
 module.exports = {
   pool,
   ensureTables,
+  sslEnabled,
 };
