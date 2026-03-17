@@ -18,6 +18,8 @@ app.use(express.json());
 const db = require('./db');
 const pool = db.pool;
 let dbReady = false;
+let lastDbError = null;
+let lastDbAttemptAt = 0;
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
 
@@ -32,19 +34,34 @@ function validatePassword(pw) {
 
 async function ensureDbReady() {
   if (dbReady) return true;
+  const now = Date.now();
+  // Avoid hammering the DB (and spamming logs) when it's down.
+  if (now - lastDbAttemptAt < 3000) return false;
+  lastDbAttemptAt = now;
   try {
     await db.ensureTables();
     dbReady = true;
+    lastDbError = null;
     return true;
   } catch (e) {
     dbReady = false;
+    lastDbError = {
+      code: e && e.code ? String(e.code) : undefined,
+      message: e && e.message ? String(e.message) : String(e),
+    };
+    console.error('DB not ready:', lastDbError);
     return false;
   }
 }
 
 app.get('/health', async (req, res) => {
   const ok = await ensureDbReady();
-  return res.json({ ok: true, dbReady: ok });
+  return res.json({
+    ok: true,
+    dbReady: ok,
+    dbError: ok ? null : lastDbError,
+    hasDatabaseUrl: Boolean(process.env.DATABASE_URL),
+  });
 });
 
 app.post('/signup', async (req, res) => {

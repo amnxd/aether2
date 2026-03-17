@@ -17,6 +17,8 @@ This backend uses PostgreSQL for users + message persistence.
 ### Required environment variables
 
 - `DATABASE_URL` (required): PostgreSQL connection string
+- `DATABASE_SSL` (optional): set to `true` to force SSL (common on Render-managed Postgres)
+- `PGSSLMODE` (optional): if set to `require`/`verify-*`, SSL is enabled
 - `JWT_SECRET` (recommended): set to a long random string in production
 - `PORT` (optional): default `8080`
 
@@ -52,7 +54,7 @@ This repo includes a production Dockerfile: [backend/Dockerfile](backend/Dockerf
    - Root directory: `backend`
    - Build command: `npm ci --omit=dev`
    - Start command: `node index.js`
-   - Env vars: `DATABASE_URL`, `JWT_SECRET`
+  - Env vars: `DATABASE_URL`, `JWT_SECRET` (and typically `DATABASE_SSL=true`)
 4. Deploy. You’ll get a URL like `https://your-service.onrender.com`.
 
 ### Option B: Docker (any VPS / Fly.io / Azure Container Apps)

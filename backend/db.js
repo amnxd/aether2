@@ -1,7 +1,31 @@
 const { Pool } = require('pg');
 
+const connectionString = process.env.DATABASE_URL || undefined;
+
+function shouldEnableSslForDatabaseUrl(url) {
+  if (!url) return false;
+  const forced = (process.env.DATABASE_SSL || '').toLowerCase();
+  if (forced === 'true' || forced === '1' || forced === 'yes') return true;
+  if (forced === 'false' || forced === '0' || forced === 'no') return false;
+
+  // Render/managed Postgres commonly requires SSL; local dev does not.
+  const isLocal = url.includes('localhost') || url.includes('127.0.0.1');
+  if (isLocal) return false;
+
+  const sslMode = (process.env.PGSSLMODE || '').toLowerCase();
+  if (sslMode === 'require' || sslMode === 'verify-ca' || sslMode === 'verify-full') return true;
+
+  // Default to SSL for non-local DATABASE_URL.
+  return true;
+}
+
+const ssl = shouldEnableSslForDatabaseUrl(connectionString)
+  ? { rejectUnauthorized: false }
+  : undefined;
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || undefined,
+  connectionString,
+  ssl,
 });
 
 async function ensureTables() {
