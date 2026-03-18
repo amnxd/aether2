@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/backend_service.dart';
 import '../services/realtime_service.dart';
+import '../services/app_preferences.dart';
 import 'login_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -15,6 +16,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _loading = true;
   String? _error;
   Map<String, dynamic>? _me;
+  bool _showGlobalChat = true;
 
   @override
   void initState() {
@@ -28,8 +30,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _error = null;
     });
     try {
+      final showGlobal = await AppPreferences.getShowGlobalChat();
       final me = await BackendService.fetchMe();
-      setState(() => _me = me);
+      setState(() {
+        _showGlobalChat = showGlobal;
+        _me = me;
+      });
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
@@ -67,6 +73,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
               leading: const Icon(Icons.person),
               title: Text(me == null ? 'Not loaded' : '@${me['username'] ?? ''}'),
               subtitle: Text(me == null ? '' : (me['email'] ?? '').toString()),
+            ),
+            const Divider(color: Colors.white12),
+            SwitchListTile(
+              secondary: const Icon(Icons.public),
+              title: const Text('Global chat'),
+              subtitle: const Text('Show Global chat in Home'),
+              value: _showGlobalChat,
+              onChanged: (v) async {
+                setState(() => _showGlobalChat = v);
+                await AppPreferences.setShowGlobalChat(v);
+              },
             ),
             const Divider(color: Colors.white12),
             ListTile(

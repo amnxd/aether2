@@ -59,11 +59,15 @@ async function ensureTables() {
       id SERIAL PRIMARY KEY,
       chat_id INTEGER REFERENCES chats(id) ON DELETE CASCADE,
       sender_email TEXT,
+      sender_user_id INTEGER,
+      reply_to_message_id INTEGER,
       e2ee_flag BOOLEAN DEFAULT false,
       ciphertext TEXT,
       nonce TEXT,
       mac TEXT,
       plaintext TEXT,
+      edited_at TIMESTAMP WITH TIME ZONE,
+      deleted_at TIMESTAMP WITH TIME ZONE,
       time TIMESTAMP WITH TIME ZONE DEFAULT now()
     );
 
@@ -78,6 +82,7 @@ async function ensureTables() {
 
   // Forward-compatible schema updates
   await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT');
+  await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS public_key_base64 TEXT');
   // Ensure uniqueness (case-sensitive). The app normalizes usernames to lowercase.
   await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users(username)');
 
@@ -90,6 +95,21 @@ async function ensureTables() {
   // If table existed from older schema, add missing columns.
   await pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS nonce TEXT');
   await pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS mac TEXT');
+  await pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_user_id INTEGER');
+  await pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_message_id INTEGER');
+  await pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP WITH TIME ZONE');
+  await pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE');
+
+  // Reply foreign key (best-effort). If it fails (e.g., existing invalid data), ignore.
+  try {
+    await pool.query(
+      'ALTER TABLE messages ADD CONSTRAINT messages_reply_to_fk FOREIGN KEY (reply_to_message_id) REFERENCES messages(id) ON DELETE SET NULL'
+    );
+  } catch (_) {
+    // ignore
+  }
+
+  await pool.query('CREATE INDEX IF NOT EXISTS messages_chat_time_idx ON messages(chat_id, time ASC)');
 
   await pool.query('CREATE INDEX IF NOT EXISTS user_devices_user_id_idx ON user_devices(user_id)');
 

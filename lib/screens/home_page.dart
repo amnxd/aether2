@@ -3,6 +3,7 @@ import '../services/backend_service.dart';
 import '../services/notification_service.dart';
 import '../services/realtime_service.dart';
 import '../services/push_service.dart';
+import '../services/app_preferences.dart';
 import 'chat_screen.dart';
 import 'login_screen.dart';
 import 'new_dm_screen.dart';
@@ -21,15 +22,23 @@ class _HomePageState extends State<HomePage> {
   String? _error;
   Map<String, dynamic>? _me;
   List<Map<String, dynamic>> _chats = [];
+  bool _showGlobalChat = true;
 
   @override
   void initState() {
     super.initState();
     // Best-effort: ask for notification permission early so incoming chats can notify.
     NotificationService.requestPermissionsIfNeeded();
+    _loadPrefs();
     _refresh();
     RealtimeService.instance.connect();
     PushService.registerWithBackend();
+  }
+
+  Future<void> _loadPrefs() async {
+    final show = await AppPreferences.getShowGlobalChat();
+    if (!mounted) return;
+    setState(() => _showGlobalChat = show);
   }
 
   Future<void> _refresh() async {
@@ -105,6 +114,21 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('Aether'),
         actions: [
+          ValueListenableBuilder<int>(
+            valueListenable: RealtimeService.instance.onlineCount,
+            builder: (_, n, __) {
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                child: Row(
+                  children: [
+                    Icon(Icons.circle, size: 10, color: Theme.of(context).colorScheme.secondary),
+                    const SizedBox(width: 6),
+                    Text('$n', style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                  ],
+                ),
+              );
+            },
+          ),
           IconButton(onPressed: _loading ? null : _refresh, icon: const Icon(Icons.refresh)),
           PopupMenuButton<String>(
             onSelected: (v) {
@@ -151,7 +175,9 @@ class _HomePageState extends State<HomePage> {
               title: const Text('Settings'),
               onTap: () {
                 Navigator.of(context).pop();
-                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
+                Navigator.of(context)
+                    .push(MaterialPageRoute(builder: (_) => const SettingsScreen()))
+                    .then((_) => _loadPrefs());
               },
             ),
           ],
@@ -169,21 +195,22 @@ class _HomePageState extends State<HomePage> {
                 padding: const EdgeInsets.all(12),
                 child: Text(_error!, style: const TextStyle(color: Colors.redAccent)),
               ),
-            Card(
-              color: const Color(0xFF0F1417),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              child: ListTile(
-                leading: const CircleAvatar(backgroundColor: Color(0xFF4C1D95), child: Icon(Icons.public, color: Colors.white)),
-                title: const Text('Global chat', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                subtitle: const Text('Everyone can chat here', style: TextStyle(color: Colors.white70)),
-                onTap: globalChat == null
-                    ? null
-                    : () {
-                        final id = (globalChat['id'] as num).toInt();
-                        Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatScreen(chatName: 'Global chat', chatId: id)));
-                      },
+            if (_showGlobalChat)
+              Card(
+                color: const Color(0xFF0F1417),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                child: ListTile(
+                  leading: const CircleAvatar(backgroundColor: Color(0xFF4C1D95), child: Icon(Icons.public, color: Colors.white)),
+                  title: const Text('Global chat', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  subtitle: const Text('Everyone can chat here', style: TextStyle(color: Colors.white70)),
+                  onTap: globalChat == null
+                      ? null
+                      : () {
+                          final id = (globalChat['id'] as num).toInt();
+                          Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatScreen(chatName: 'Global chat', chatId: id)));
+                        },
+                ),
               ),
-            ),
             const SizedBox(height: 10),
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),

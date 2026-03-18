@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/backend_service.dart';
+import 'home_page.dart';
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -14,6 +15,8 @@ class _SignupScreenState extends State<SignupScreen> {
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _loading = false;
+  bool _rememberMe = false;
+  bool _passwordVisible = false;
 
   String? _validateEmail(String? v) {
     if (v == null || v.trim().isEmpty) return 'Please enter email';
@@ -45,6 +48,7 @@ class _SignupScreenState extends State<SignupScreen> {
       _emailController.text.trim(),
       _usernameController.text.trim().toLowerCase(),
       _passwordController.text,
+      rememberMe: _rememberMe,
     );
     if (!mounted) return;
     setState(() => _loading = false);
@@ -52,7 +56,10 @@ class _SignupScreenState extends State<SignupScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
       return;
     }
-    Navigator.of(context).pop(); // return to login or let auth state redirect
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const HomePage()),
+      (_) => false,
+    );
   }
 
   @override
@@ -91,9 +98,25 @@ class _SignupScreenState extends State<SignupScreen> {
               const SizedBox(height: 12),
               TextFormField(
                 controller: _passwordController,
-                decoration: const InputDecoration(labelText: 'Password'),
-                obscureText: true,
+                obscureText: !_passwordVisible,
+                enableSuggestions: false,
+                autocorrect: false,
+                decoration: InputDecoration(
+                  labelText: 'Password',
+                  suffixIcon: IconButton(
+                    onPressed: () => setState(() => _passwordVisible = !_passwordVisible),
+                    icon: Icon(_passwordVisible ? Icons.visibility_off : Icons.visibility),
+                  ),
+                ),
                 validator: _validatePassword,
+              ),
+              const SizedBox(height: 8),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _rememberMe,
+                onChanged: _loading ? null : (v) => setState(() => _rememberMe = v ?? false),
+                title: const Text('Remember me'),
+                controlAffinity: ListTileControlAffinity.leading,
               ),
               const SizedBox(height: 20),
               SizedBox(

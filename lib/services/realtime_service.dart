@@ -16,6 +16,7 @@ class RealtimeService {
   Stream<Map<String, dynamic>> get messages => _messages.stream;
 
   final ValueNotifier<bool> connected = ValueNotifier<bool>(false);
+  final ValueNotifier<int> onlineCount = ValueNotifier<int>(0);
   String? lastError;
 
   IOWebSocketChannel? _channel;
@@ -30,7 +31,7 @@ class RealtimeService {
   }
 
   Future<void> connect() async {
-    final token = BackendService.authToken;
+    final token = await BackendService.getValidAuthTokenOrNull();
     if (token == null) {
       lastError = 'Missing auth token';
       connected.value = false;
@@ -59,6 +60,14 @@ class RealtimeService {
         (dynamic msg) async {
           final payload = _decodeMessage(msg);
           if (payload == null) return;
+
+          // Presence broadcast: online user count.
+          if (payload['type'] == 'presence') {
+            final v = payload['online_count'];
+            final n = (v is num) ? v.toInt() : int.tryParse(v?.toString() ?? '');
+            if (n != null) onlineCount.value = n;
+            return;
+          }
 
           // Notifications (best-effort): only show for other users and when not currently viewing that chat.
           final incomingChatId = _toInt(payload['chat_id']);

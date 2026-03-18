@@ -12,14 +12,28 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _emailController = TextEditingController();
+  final _loginController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _loading = false;
+  bool _rememberMe = false;
+  bool _passwordVisible = false;
 
-  String? _validateEmail(String? v) {
-    if (v == null || v.trim().isEmpty) return 'Please enter email';
-    final emailRegex = RegExp(r"^[^@\s]+@[^@\s]+\.[^@\s]+$");
-    if (!emailRegex.hasMatch(v.trim())) return 'Enter a valid email';
+  String? _validateLogin(String? v) {
+    final value = (v ?? '').trim();
+    if (value.isEmpty) return 'Please enter email or username';
+
+    // If it looks like an email, validate email format.
+    if (value.contains('@')) {
+      final emailRegex = RegExp(r"^[^@\s]+@[^@\s]+\.[^@\s]+$");
+      if (!emailRegex.hasMatch(value)) return 'Enter a valid email';
+      return null;
+    }
+
+    // Otherwise validate username: 3-24 chars, letters/numbers/underscore.
+    final u = value.toLowerCase();
+    if (u.length < 3 || u.length > 24) return 'Username must be 3-24 characters';
+    final usernameRegex = RegExp(r'^[a-z0-9_]+$');
+    if (!usernameRegex.hasMatch(u)) return 'Username can only use letters, numbers, _';
     return null;
   }
 
@@ -33,7 +47,11 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _loading = true);
     await BackendService.warmUp();
-    final err = await BackendService.login(_emailController.text.trim(), _passwordController.text);
+    final err = await BackendService.login(
+      _loginController.text.trim(),
+      _passwordController.text,
+      rememberMe: _rememberMe,
+    );
     if (!mounted) return;
     setState(() => _loading = false);
     if (err != null) {
@@ -45,7 +63,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   void dispose() {
-    _emailController.dispose();
+    _loginController.dispose();
     _passwordController.dispose();
     super.dispose();
   }
@@ -62,17 +80,33 @@ class _LoginScreenState extends State<LoginScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               TextFormField(
-                controller: _emailController,
-                decoration: const InputDecoration(labelText: 'Email'),
+                controller: _loginController,
+                decoration: const InputDecoration(labelText: 'Email or username'),
                 keyboardType: TextInputType.emailAddress,
-                validator: _validateEmail,
+                validator: _validateLogin,
               ),
               const SizedBox(height: 12),
               TextFormField(
                 controller: _passwordController,
-                decoration: const InputDecoration(labelText: 'Password'),
-                obscureText: true,
+                obscureText: !_passwordVisible,
+                enableSuggestions: false,
+                autocorrect: false,
+                decoration: InputDecoration(
+                  labelText: 'Password',
+                  suffixIcon: IconButton(
+                    onPressed: () => setState(() => _passwordVisible = !_passwordVisible),
+                    icon: Icon(_passwordVisible ? Icons.visibility_off : Icons.visibility),
+                  ),
+                ),
                 validator: _validatePassword,
+              ),
+              const SizedBox(height: 8),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _rememberMe,
+                onChanged: _loading ? null : (v) => setState(() => _rememberMe = v ?? false),
+                title: const Text('Remember me'),
+                controlAffinity: ListTileControlAffinity.leading,
               ),
               const SizedBox(height: 20),
               SizedBox(
